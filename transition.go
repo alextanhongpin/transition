@@ -2,16 +2,8 @@ package transition
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 )
-
-type DBTX interface {
-	ExecContext(context.Context, string, ...interface{}) (sql.Result, error)
-	PrepareContext(context.Context, string) (*sql.Stmt, error)
-	QueryContext(context.Context, string, ...interface{}) (*sql.Rows, error)
-	QueryRowContext(context.Context, string, ...interface{}) *sql.Row
-}
 
 // Transition is a struct, embed it in your struct to enable state machine for the struct
 type Transition struct {
@@ -35,7 +27,7 @@ type Stater interface {
 }
 
 // New initialize a new StateMachine that hold states, events definitions
-func New(value interface{}) *StateMachine {
+func New() *StateMachine {
 	return &StateMachine{
 		states: map[string]*State{},
 		events: map[string]*Event{},
@@ -70,15 +62,8 @@ func (sm *StateMachine) Event(name string) *Event {
 }
 
 // Trigger trigger an event
-func (sm *StateMachine) Trigger(name string, value Stater, tx DBTX) error {
-	var (
-		newTx    DBTX
-		stateWas = value.GetState()
-	)
-
-	if tx != nil {
-		newTx = tx.New()
-	}
+func (sm *StateMachine) Trigger(ctx context.Context, name string, value Stater) error {
+	stateWas := value.GetState()
 
 	if stateWas == "" {
 		stateWas = sm.initialState
@@ -108,7 +93,7 @@ func (sm *StateMachine) Trigger(name string, value Stater, tx DBTX) error {
 			// State: exit
 			if state, ok := sm.states[stateWas]; ok {
 				for _, exit := range state.exits {
-					if err := exit(value, newTx); err != nil {
+					if err := exit(ctx, value); err != nil {
 						return err
 					}
 				}
@@ -116,7 +101,7 @@ func (sm *StateMachine) Trigger(name string, value Stater, tx DBTX) error {
 
 			// Transition: before
 			for _, before := range transition.befores {
-				if err := before(value, newTx); err != nil {
+				if err := before(ctx, value); err != nil {
 					return err
 				}
 			}
@@ -126,7 +111,7 @@ func (sm *StateMachine) Trigger(name string, value Stater, tx DBTX) error {
 			// State: enter
 			if state, ok := sm.states[transition.to]; ok {
 				for _, enter := range state.enters {
-					if err := enter(value, newTx); err != nil {
+					if err := enter(ctx, value); err != nil {
 						value.SetState(stateWas)
 						return err
 					}
@@ -135,7 +120,7 @@ func (sm *StateMachine) Trigger(name string, value Stater, tx DBTX) error {
 
 			// Transition: after
 			for _, after := range transition.afters {
-				if err := after(value, newTx); err != nil {
+				if err := after(ctx, value); err != nil {
 					value.SetState(stateWas)
 					return err
 				}
@@ -150,18 +135,18 @@ func (sm *StateMachine) Trigger(name string, value Stater, tx DBTX) error {
 // State contains State information, including enter, exit hooks
 type State struct {
 	Name   string
-	enters []func(value interface{}, tx DBTX) error
-	exits  []func(value interface{}, tx DBTX) error
+	enters []func(ctx context.Context, value interface{}) error
+	exits  []func(ctx context.Context, value interface{}) error
 }
 
 // Enter register an enter hook for State
-func (state *State) Enter(fc func(value interface{}, tx DBTX) error) *State {
+func (state *State) Enter(fc func(ctx context.Context, value interface{}) error) *State {
 	state.enters = append(state.enters, fc)
 	return state
 }
 
 // Exit register an exit hook for State
-func (state *State) Exit(fc func(value interface{}, tx DBTX) error) *State {
+func (state *State) Exit(fc func(ctx context.Context, value interface{}) error) *State {
 	state.exits = append(state.exits, fc)
 	return state
 }
@@ -183,8 +168,8 @@ func (event *Event) To(name string) *EventTransition {
 type EventTransition struct {
 	to      string
 	froms   []string
-	befores []func(value interface{}, tx DBTX) error
-	afters  []func(value interface{}, tx DBTX) error
+	befores []func(ctx context.Context, value interface{}) error
+	afters  []func(ctx context.Context, value interface{}) error
 }
 
 // From used to define from states
@@ -194,13 +179,13 @@ func (transition *EventTransition) From(states ...string) *EventTransition {
 }
 
 // Before register before hooks
-func (transition *EventTransition) Before(fc func(value interface{}, tx DBTX) error) *EventTransition {
+func (transition *EventTransition) Before(fc func(ctx context.Context, value interface{}) error) *EventTransition {
 	transition.befores = append(transition.befores, fc)
 	return transition
 }
 
 // After register after hooks
-func (transition *EventTransition) After(fc func(value interface{}, tx DBTX) error) *EventTransition {
+func (transition *EventTransition) After(fc func(ctx context.Context, value interface{}) error) *EventTransition {
 	transition.afters = append(transition.afters, fc)
 	return transition
 }
